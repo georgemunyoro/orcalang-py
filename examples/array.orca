@@ -1,0 +1,56 @@
+// 
+// struct IntVector {
+//     data: int*;
+//     size: int;
+// }
+// 
+// func new_int_vector() -> Board {
+//     let iv: IntVector = IntVector(
+//         data: malloc(0),
+//         size: 0
+//     );
+//     return iv;
+// }
+// 
+// func append(iv: IntVector*, value_to_append: int) -> void {
+//     let upated_data: int* = malloc(iv->size + 1);
+//     let i: int = 0;
+//     while (i < iv->size) {
+//         updated_data[i] = iv->data[i];
+//         ++i;
+//     }
+//     updated_data[iv->size] = value_to_append;
+// 
+//     free(iv->data);
+//     iv->data = updated_data;
+//     iv->size = iv->size + 1;
+// }
+// 
+// func pop(iv: IntVector*) -> int {
+//     let popped_value: int = iv->data[iv->size - 1];
+//     let upated_data: int* = malloc(iv->size - 1);
+//     let i: int = 0;
+//     while (i < (iv->size - 1)) {
+//         updated_data[i] = iv->data[i];
+//         ++i;
+//     }
+//     
+//     free(iv->data);
+//     iv->data = updated_data;
+//     iv->size = iv->size - 1;
+// 
+//     return popped_value;
+// }
+// 
+// func at(iv: IntVector*, index: int) -> int {
+//     return iv->data[index];
+// }
+// 
+// func main() -> int {
+//     let numbers: IntVector = new_int_vector();
+//     let i: int = 0;
+//     while (i < 100) {
+//         append(&numbers, i);
+//     }
+// }
+//

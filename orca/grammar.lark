@@ -1,0 +1,173 @@
+
+?program: (statement | function_definition | method_definition | declaration)*
+    
+// Declarations
+?declaration: struct_declaration
+              | variable_declaration
+
+variable_declaration: "let" IDENTIFIER ":" type "=" expression ";"
+              | "let" IDENTIFIER "[" INT "]" ":" type ";" -> array_variable_declaration
+
+struct_declaration: "struct" IDENTIFIER "{" struct_field_declaration_list "}"
+
+struct_field_declaration_list: struct_field_declaration*
+struct_field_declaration: IDENTIFIER ":" type ";"
+
+// Functions
+function_definition: "func" IDENTIFIER "(" parameter_type_list? ")" "->" type compound_statement
+
+method_definition: "method" type "::" IDENTIFIER "(" parameter_type_list? ")" "->" type compound_statement
+
+parameter_type_list: parameter_type
+                     | parameter_type_list "," parameter_type
+
+parameter_type: IDENTIFIER ":" type
+
+// Types
+type: type_specifier
+       | type pointer?
+
+pointer: "*"
+
+type_specifier: "int" -> int
+              | "i8" -> i8
+              | "i16" -> i16
+              | "i32" -> i32
+              | "i64" -> i64
+              | "char" -> char
+              | "bool" -> bool
+              | "float" -> float
+              | "void" -> void
+              | IDENTIFIER -> user_type
+
+// Statements
+?statement: jump_statement
+                     | labeled_statement
+                     | compound_statement
+                     | selection_statement
+                     | expression_statement
+                     | iteration_statement
+                     | variable_declaration
+
+expression_statement: expression ";"
+
+labeled_statement: IDENTIFIER ":" statement
+                     | "case" constant_expression ":" statement -> case_statement
+                     | "default" ":" statement -> default_statement
+
+compound_statement: "{" statement* "}"
+
+selection_statement: "if" "(" expression ")" statement -> if_stmt
+                     | "if" "(" expression ")" statement "else" statement -> if_else_stmt
+                     | "switch" "(" expression ")" statement -> switch_statement
+
+jump_statement: "continue" ";"                   -> continue_statement
+                     | "break" ";"               -> break_statement
+                     | "return" expression? ";"  -> return_statement
+
+iteration_statement: "while" "(" expression ")" statement             -> while_statement
+                     | "do" statement "while" "(" expression ")" ";"  -> do_while_statement
+
+// Expressions
+
+?expression: assignment_expression
+
+?assignment_expression: conditional_expression
+                     | unary_expression assignment_operator assignment_expression
+
+?conditional_expression: logical_or_expression
+                     | logical_or_expression "?" expression ":" conditional_expression
+
+?logical_or_expression: logical_and_expression
+                     | logical_or_expression "||" logical_and_expression
+
+?logical_and_expression: inclusive_or_expression
+                     | logical_and_expression "&&" inclusive_or_expression
+
+?inclusive_or_expression: exclusive_or_expression
+                     | inclusive_or_expression "^" exclusive_or_expression
+
+?exclusive_or_expression: and_expression
+                     | exclusive_or_expression "|" and_expression
+
+?and_expression: equality_expression
+                     | and_expression "&" equality_expression
+
+?equality_expression: relational_expression
+                     | equality_expression "==" relational_expression -> eq_expr
+                     | equality_expression "!=" relational_expression -> ne_expr
+
+?relational_expression: shift_expression
+                     | relational_expression "<" shift_expression  -> lt_expr
+                     | relational_expression ">" shift_expression  -> gt_expr
+                     | relational_expression "<=" shift_expression -> le_expr
+                     | relational_expression ">=" shift_expression -> ge_expr
+
+?shift_expression: additive_expression
+                     | shift_expression "<<" additive_expression -> shift_l_expr
+                     | shift_expression ">>" additive_expression -> shift_r_expr
+
+?additive_expression: multiplicative_expression
+                     | additive_expression "+" multiplicative_expression -> add_expr
+                     | additive_expression "-" multiplicative_expression -> sub_expr
+
+?multiplicative_expression: cast_expression
+                     | multiplicative_expression "*" unary_expression -> mul_expr
+                     | multiplicative_expression "%" unary_expression -> mod_expr
+                     | multiplicative_expression "/" unary_expression -> div_expr
+
+?cast_expression: "(" type ")" cast_expression
+                     | unary_expression
+
+?unary_expression: "sizeof" "(" type ")" -> sizeof_type_expr
+                     | postfix_expression
+                     | unary_operator cast_expression
+
+?postfix_expression: primary_expression
+                     | postfix_expression "[" expression "]" -> index
+                     | postfix_expression "." IDENTIFIER -> access
+                     | postfix_expression "->" IDENTIFIER -> pointer_access
+                     | postfix_expression "(" argument_expression_list? ")" -> function_call
+                     | postfix_expression "++" -> post_increment
+                     | postfix_expression "--" -> post_decrement
+                     | type "::" IDENTIFIER -> static_access
+
+argument_expression_list: argument_expression
+                     | argument_expression_list "," argument_expression
+
+?argument_expression: assignment_expression
+                     | IDENTIFIER ":" assignment_expression -> labeled_argument_expression
+
+?constant_expression: conditional_expression
+
+primary_expression: constant
+                     | "true"  -> constant_true
+                     | "false" -> constant_false
+                     | IDENTIFIER -> identifier
+                     | ESCAPED_STRING -> constant_string
+                     | "(" expression ")"
+
+!assignment_operator: "=" | "*=" | "/=" | "%=" | "+=" | "-="
+	            | "<<=" | ">>=" | "&=" | "^=" | "|="
+
+unary_operator: "++" -> pre_inc 
+              | "--" -> pre_dec 
+              | "&" -> ref 
+              | "*" -> deref 
+              | "-" -> neg 
+              | "~" -> bit_not 
+              | "!" -> log_not
+
+constant: INT | FLOAT
+
+// ...
+
+IDENTIFIER: (LETTER | "_")+ ( LETTER | DIGIT | "_" )* 
+
+SYMBOL: "[" | "]" | "{" | "}" | "(" | ")" | "<" | ">"
+       | "'" | "\"" | "=" | "|" | "." | "," | ";"
+
+%import common (INT, LETTER, WS, DIGIT, CPP_COMMENT, ESCAPED_STRING, FLOAT)
+
+%ignore WS
+%ignore CPP_COMMENT
