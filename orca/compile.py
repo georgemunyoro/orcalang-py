@@ -1,5 +1,5 @@
 from ctypes import CFUNCTYPE, c_int32
-from codegen import CodeGenerator
+from orca.codegen import CodeGenerator
 import llvmlite.binding as llvm
 import subprocess
 from uuid import uuid4
@@ -23,7 +23,7 @@ def compile_ir(engine: llvm.ExecutionEngine, llvm_ir: str):
     return mod
 
 
-def compile(cg: CodeGenerator):
+def compile(cg: CodeGenerator, outfilepath: str):
     llvm.initialize()
     llvm.initialize_native_target()
     llvm.initialize_native_asmprinter()
@@ -42,5 +42,5 @@ def compile(cg: CodeGenerator):
         mcjit.set_object_cache(on_compiled, lambda m: None)
         mcjit.finalize_object()
 
-    subprocess.run(["gcc", "-o", "a.out", modfilepath])
+    subprocess.run(["gcc", "-o", outfilepath, modfilepath])
     subprocess.run(["rm", modfilepath])

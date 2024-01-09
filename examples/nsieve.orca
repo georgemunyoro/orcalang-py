@@ -1,0 +1,10 @@
+
+func atoi(char* c) -> i32 {
+    
+}
+
+func main(argc: i32, argv: char**) -> i32 {
+    let m: i32 = atoi(argv[1]);
+    printf("%d\n", m);
+    return 0;
+}

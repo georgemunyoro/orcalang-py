@@ -4,7 +4,7 @@ from lark.visitors import Interpreter
 from llvmlite import ir, binding
 from collections import OrderedDict
 
-from scope import Scope
+from orca.scope import Scope
 
 
 int_t = ir.IntType(32)
