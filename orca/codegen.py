@@ -7,8 +7,6 @@ from collections import OrderedDict
 from orca.scope import Scope
 
 
-int_t = ir.IntType(32)
-
 i8_t = ir.IntType(8)
 i16_t = ir.IntType(16)
 i32_t = ir.IntType(32)
@@ -45,6 +43,15 @@ class CodeGenerator(Interpreter):
     struct_map = dict({})
     native_functions = dict({})
     vtable = dict({})
+    enums: List[str] = []
+    generic_struct_map = dict({})
+
+    curr_namespace_name = None
+    curr_namespace_data = dict({})
+
+    curr_loop = None
+    curr_loop_end = None
+    curr_loop_cond = None
 
     def __init__(self):
         self.module = ir.Module(name=__file__)
@@ -54,23 +61,90 @@ class CodeGenerator(Interpreter):
         for stmt in values.children:
             self.visit(stmt)
 
+    def enum_declaration(self, values: Tree):
+        fields = [
+            Tree(
+                Token("RULE", "static_struct_field_declaration"),
+                [
+                    field,
+                    Tree(Token("RULE", "type"), [Tree("i32", [])]),
+                    Tree(Token("RULE", "constant"), [Token("INT", str(i))]),
+                ],
+            )
+            for i, field in enumerate(values.children[1:])
+        ]
+        desugared_struct_decl = Tree(
+            Token("RULE", "struct_declaration"),
+            [
+                values.children[0],
+                Tree(Token("RULE", "struct_field_declaration_list"), fields),
+            ],
+        )
+        self.enums.append(values.children[0])
+        return self.visit(desugared_struct_decl)
+
     def struct_declaration(self, struct_decl: Tree):
+        if len(struct_decl.children) == 3:
+            s_name = struct_decl.children[0]
+
+            opaque_params = []
+            curr = struct_decl.children[1]
+            while len(curr.children) == 2:
+                opaque_params.insert(0, curr.children[1].value)
+                curr = curr.children[0]
+            opaque_params.insert(0, curr.children[0].value)
+
+            # print(s_name)
+            # print(opaque_params)
+
+            s_fields = OrderedDict()
+            for i, decl in enumerate(struct_decl.children[2].children):
+                field_name = decl.children[0].value
+                s_fields[field_name] = decl.children[1]
+
+            self.generic_struct_map[s_name] = {
+                "fields": s_fields,
+                "args": opaque_params,
+            }
+
+            return
+
         struct_type = self.module.context.get_identified_type(struct_decl.children[0])
 
         s_fields = OrderedDict()
         self.struct_map[struct_decl.children[0]] = dict({})
 
+        static_count = 0
+
         for i, decl in enumerate(struct_decl.children[1].children):
+            if decl.data == "static_struct_field_declaration":
+                field_name = decl.children[0].value
+                field_type = self.visit(decl.children[1])
+                field_value = self.visit(decl.children[2])
+
+                assert field_type == field_value.type
+
+                if struct_type not in self.vtable:
+                    self.vtable[struct_type] = dict({})
+
+                self.vtable[struct_type][field_name] = field_value
+                static_count += 1
+
+                continue
+
             field_name = decl.children[0].value
             field_type = self.visit(decl.children[1])
             s_fields[field_name] = field_type
 
-            self.struct_map[struct_decl.children[0]][field_name] = i
+            self.struct_map[struct_decl.children[0]][field_name] = i - static_count
 
         struct_type.set_body(*s_fields.values())
 
     def variable_declaration(self, var_decl: Tree):
         var_name = var_decl.children[0]
+
+        assert self.scope.get(var_name) is None
+
         declared_type = self.visit(var_decl.children[1])
         initializer: ir.Value = self.visit(var_decl.children[2])
 
@@ -79,7 +153,11 @@ class CodeGenerator(Interpreter):
                 f"When initializing variable '{var_name}', declared type to be {str(declared_type)}, but initializer is of type {str(initializer.type)}"
             )
 
-        alloca = self.builder.alloca(declared_type, 1, var_name)
+        alloca = None
+        with self.builder.goto_entry_block():
+            alloca = self.builder.alloca(declared_type, 1, var_name)
+        assert alloca is not None
+
         self.builder.store(initializer, alloca)
         self.scope.insert(var_name, alloca)
 
@@ -108,10 +186,8 @@ class CodeGenerator(Interpreter):
 
     def assignment_expression(self, assign_expr: Tree):
         load: ir.LoadInstr = self.visit(assign_expr.children[0])
-        return self.builder.store(
-            self.visit(assign_expr.children[2]),
-            load.operands[0],
-        )
+        s = self.builder.store(self.visit(assign_expr.children[2]), load.operands[0])
+        return s.operands[0]
 
     def identifier(self, id: Tree):
         name = id.children[0].value
@@ -127,6 +203,14 @@ class CodeGenerator(Interpreter):
         return self.builder.load(self.scope.get(name))
 
     def static_access(self, values: Tree):
+        # if values.children[1].data == "user_type":
+        # if values.children[0].children[0].data == "user_type":
+        #     tname = values.children[0].children[0].children[0].value
+        #     if tname in self.enums:
+        #         ...
+        #     print()
+        #     quit()
+
         ty = self.visit(values.children[0])
         accessor = values.children[1].value
         return self.vtable[ty][accessor]
@@ -134,6 +218,19 @@ class CodeGenerator(Interpreter):
     def normalized_type_name(self, t: ir.Type):
         if isinstance(t, ir.IdentifiedStructType):
             return t.name
+
+        if isinstance(t, ir.PointerType):
+            indir_count = 0
+
+            curr = t
+            while curr.is_pointer:
+                indir_count += 1
+                curr = curr.pointee
+
+            return f"{curr.intrinsic_name}_{'_ptr' * indir_count}_"
+
+        if isinstance(t, ir.IntType):
+            return t.intrinsic_name
 
         raise Exception("Unhandled type: ", t)
 
@@ -218,10 +315,36 @@ class CodeGenerator(Interpreter):
         self.scope = self.scope.parent
         return func
 
+    def for_statement(self, for_stmt: Tree):
+        decl, condition, updater, body = for_stmt.children
+        desugared_while = Tree(
+            Token("RULE", "compound_statement"),
+            [
+                decl,
+                Tree(
+                    "while_statement",
+                    [
+                        condition,
+                        Tree(
+                            Token("RULE", "compound_statement"),
+                            [body, updater],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        self.visit(desugared_while)
+
     def while_statement(self, while_stmt: Tree):
         w_cond = self.builder.append_basic_block(name=self.get_repetitive_id("w_cond"))
         w_body = self.builder.append_basic_block(name=self.get_repetitive_id("w_body"))
         w_else = self.builder.append_basic_block(name=self.get_repetitive_id("w_else"))
+
+        prev_curr_loop_end = self.curr_loop_end
+        self.curr_loop_end = w_else
+
+        prev_curr_loop_cond = self.curr_loop_cond
+        self.curr_loop_cond = w_cond
 
         self.builder.branch(w_cond)
 
@@ -230,9 +353,14 @@ class CodeGenerator(Interpreter):
 
         self.builder.position_at_start(w_body)
         self.visit(while_stmt.children[1])
-        self.builder.branch(w_cond)
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(w_cond)
 
         self.builder.position_at_start(w_else)
+
+        self.curr_loop_end = prev_curr_loop_end
+        self.curr_loop_cond = prev_curr_loop_cond
 
     def parameter_type_list(self, values: Tree):
         params = CodeGenerator.flatten_parameter_type_list(values)
@@ -249,6 +377,9 @@ class CodeGenerator(Interpreter):
         if type_to_cast_to.is_pointer and not val.type.is_pointer:
             return self.builder.inttoptr(val, type_to_cast_to)
 
+        if not type_to_cast_to.is_pointer and val.type.is_pointer:
+            return self.builder.ptrtoint(val, type_to_cast_to)
+
         if self.get_size_of(val.type) > self.get_size_of(type_to_cast_to):
             return self.builder.trunc(val, type_to_cast_to)
 
@@ -259,8 +390,6 @@ class CodeGenerator(Interpreter):
 
     def type(self, values: Tree):
         match values.children[0].data:
-            case "int":
-                return int_t
             case "i8":
                 return i8_t
             case "i16":
@@ -281,11 +410,47 @@ class CodeGenerator(Interpreter):
 
             case "user_type":
                 typename = values.children[0].children[0].value
+
+                # if typename in self.type_param_map:
+                #     return self.type_param_map[typename]
+
                 return self.module.context.get_identified_type(typename)
 
         if values.children[0].data == "type":
             t: ir.Type = self.visit(values.children[0]).as_pointer()
             return t
+
+        # if values.children[0].data == "user_type_generic":
+        #     s_info = self.generic_struct_map[values.children[0].children[0]]
+
+        #     params = []
+        #     curr = values.children[0].children[1]
+        #     while len(curr.children) == 2:
+        #         params.append(self.visit(curr.children[1]))
+        #         curr = curr.children[0]
+        #     params.append(self.visit(curr.children[0]))
+
+        #     s_name = (
+        #         values.children[0].children[0]
+        #         + "_"
+        #         + "_".join([self.normalized_type_name(p) for p in params])
+        #     )
+
+        #     s_type: ir.IdentifiedStructType = self.module.context.get_identified_type(
+        #         s_name
+        #     )
+
+        #     self.type_param_map = dict(zip(s_info["args"], params))
+
+        #     for i, name in enumerate(s_info["fields"]):
+        #         if s_type.name not in self.struct_map:
+        #             self.struct_map[s_type.name] = dict({})
+        #         self.struct_map[s_type.name][name] = i
+
+        #     if s_type.elements is None:
+        #         s_type.set_body(*[self.visit(i) for i in s_info["fields"].values()])
+
+        #     return s_type
 
         raise Exception(f"Unhandled type: {values}")
 
@@ -293,11 +458,21 @@ class CodeGenerator(Interpreter):
         self.scope = Scope(self.scope)
         for statement in values.children:
             self.visit(statement)
+            # if statement.data == "break_statement":
+            #     break
         self.scope = self.scope.parent
 
     def sizeof_type_expr(self, sizeof_type_expr: Tree):
         size_of_type = self.get_size_of(self.visit(sizeof_type_expr.children[0]))
         return i32_t(size_of_type)
+
+    def break_statement(self, _: Tree):
+        raise Exception("break not implemented")
+        self.builder.branch(self.curr_loop_end)
+
+    def continue_statement(self, _: Tree):
+        raise Exception("continue not implemented")
+        self.builder.branch(self.curr_loop_cond)
 
     def pointer_access(self, ptr_access_expr: Tree):
         access = Tree(
@@ -410,6 +585,25 @@ class CodeGenerator(Interpreter):
                     [self.visit(arg) for arg in args],
                 )
 
+            elif call.children[0].children[0].value == "syscall":
+                syscall_f_ty = ir.FunctionType(
+                    ir.IntType(64), [ir.IntType(64), ir.IntType(64)]
+                )
+
+                # reg = 0
+                # syscall = self.builder.asm(syscall_f_ty, "mov x0, ")
+
+                arg_values = [self.visit(arg) for arg in args]
+
+                for i, arg_value in enumerate(arg_values):
+                    self.builder.store_reg(arg_value, arg_value.type, f"x{i}")
+
+                return self.builder.asm(
+                    ir.FunctionType(void_t, []), "svc 0", "", [], True, name="syscall"
+                )
+
+                # quit()
+
             elif call.children[0].children[0].value == "free":
                 if "free" not in self.native_functions:
                     free_ty = ir.FunctionType(void_t, [i32_t.as_pointer()])
@@ -447,6 +641,21 @@ class CodeGenerator(Interpreter):
             lhs=self.visit(values.children[0]),
             rhs=self.visit(values.children[1]),
             name="mul_tmp",
+        )
+
+    def shift_r_expr(self, values: Tree):
+        raise Exception("shr todo")
+        # return self.builder.sh(
+        #     lhs=self.visit(values.children[0]),
+        #     rhs=self.visit(values.children[1]),
+        #     name="shr_tmp",
+        # )
+
+    def shift_l_expr(self, values: Tree):
+        return self.builder.shl(
+            lhs=self.visit(values.children[0]),
+            rhs=self.visit(values.children[1]),
+            name="shl_tmp",
         )
 
     def div_expr(self, values: Tree):
@@ -530,6 +739,13 @@ class CodeGenerator(Interpreter):
     def expression_statement(self, expr_stmt: Tree):
         self.visit(expr_stmt.children[0])
 
+    def and_expression(self, and_expression: Tree):
+        return self.builder.and_(
+            lhs=self.visit(and_expression.children[0]),
+            rhs=self.visit(and_expression.children[1]),
+            name="andtmp",
+        )
+
     def add_expr(self, add_expr: Tree):
         return self.builder.add(
             lhs=self.visit(add_expr.children[0]),
@@ -583,7 +799,7 @@ class CodeGenerator(Interpreter):
 
         match tok.type:
             case "INT":
-                return ir.Constant(int_t, int(tok.value))
+                return ir.Constant(i32_t, int(tok.value))
 
         raise Exception(f"Unhandled constant kind: {tok.type}")
 

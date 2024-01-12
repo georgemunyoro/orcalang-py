@@ -3,6 +3,7 @@ import typer
 from lark import Lark
 from orca.codegen import CodeGenerator
 from orca.compile import compile as orca_compile
+from orca.preprocess import Preprocessor, PreprocessorConfig
 
 from orca import __app_name__, __version__
 
@@ -21,16 +22,20 @@ def compile(
     out_path: str = typer.Option("a.out", "--output", "-o", prompt="Output filepath"),
 ) -> None:
     with open("orca/grammar.lark", "r") as grammar_file:
-        with open(source_path, "r") as source_file:
-            parser = Lark(grammar_file.read(), start="program")
-            tree = parser.parse(source_file.read())
+        pp = Preprocessor(PreprocessorConfig(print_logs=True))
+        source = pp.preprocess(source_path)
 
-            # print(tree.pretty())
-            # print("-" * 80)
+        parser = Lark(grammar_file.read(), start="program")
+        tree = parser.parse(source)
 
-            cg = CodeGenerator()
-            codegen_res = cg.visit(tree)
-            orca_compile(cg, outfilepath=out_path)
+        # print(tree.pretty())
+
+        cg = CodeGenerator()
+        cg.visit(tree)
+
+        # print(cg.module)
+
+        orca_compile(cg, outfilepath=out_path)
 
 
 @app.callback()

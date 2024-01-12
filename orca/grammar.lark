@@ -4,14 +4,21 @@
 // Declarations
 ?declaration: struct_declaration
               | variable_declaration
+              // | enum_declaration
 
 variable_declaration: "let" IDENTIFIER ":" type "=" expression ";"
               | "let" IDENTIFIER "[" INT "]" ":" type ";" -> array_variable_declaration
 
-struct_declaration: "struct" IDENTIFIER "{" struct_field_declaration_list "}"
+struct_declaration: "struct" IDENTIFIER ("<" generic_type_parameter_list ">")? "{" struct_field_declaration_list "}"
 
-struct_field_declaration_list: struct_field_declaration*
+generic_type_parameter_list: IDENTIFIER
+                     | generic_type_parameter_list "," IDENTIFIER
+
+struct_field_declaration_list: (struct_field_declaration | static_struct_field_declaration)*
 struct_field_declaration: IDENTIFIER ":" type ";"
+static_struct_field_declaration: "static" IDENTIFIER ":" type "=" constant ";"
+
+enum_declaration: "enum" IDENTIFIER "{" IDENTIFIER* "}"
 
 // Functions
 function_definition: "func" IDENTIFIER "(" parameter_type_list? ")" "->" type compound_statement
@@ -39,6 +46,10 @@ type_specifier: "int" -> int
               | "float" -> float
               | "void" -> void
               | IDENTIFIER -> user_type
+              // | IDENTIFIER "<" type_list ">" -> user_type_generic
+
+type_list: type
+              | type_list "," type
 
 // Statements
 ?statement: jump_statement
@@ -57,16 +68,17 @@ labeled_statement: IDENTIFIER ":" statement
 
 compound_statement: "{" statement* "}"
 
-selection_statement: "if" "(" expression ")" statement -> if_stmt
-                     | "if" "(" expression ")" statement "else" statement -> if_else_stmt
-                     | "switch" "(" expression ")" statement -> switch_statement
+selection_statement: "if" expression compound_statement -> if_stmt
+                     | "if" expression compound_statement "else" statement -> if_else_stmt
+                     | "switch" expression compound_statement -> switch_statement
 
 jump_statement: "continue" ";"                   -> continue_statement
                      | "break" ";"               -> break_statement
                      | "return" expression? ";"  -> return_statement
 
-iteration_statement: "while" "(" expression ")" statement             -> while_statement
-                     | "do" statement "while" "(" expression ")" ";"  -> do_while_statement
+iteration_statement: "while" expression compound_statement            -> while_statement
+                     | "do" statement "while" expression ";"  -> do_while_statement
+                     | "for" "(" statement expression ";" expression ")" statement -> for_statement
 
 // Expressions
 
