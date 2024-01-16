@@ -26,6 +26,7 @@ def compile_ir(engine: llvm.ExecutionEngine, llvm_ir: str):
 def compile(cg: CodeGenerator, outfilepath: str):
     llvm.initialize()
     llvm.initialize_native_target()
+    llvm.initialize_native_asmparser()
     llvm.initialize_native_asmprinter()
 
     target = llvm.Target.from_default_triple()

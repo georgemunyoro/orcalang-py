@@ -1,4 +1,4 @@
-from typing import List
+from typing import Dict, List
 from lark import Tree, Token
 from lark.visitors import Interpreter
 from llvmlite import ir, binding
@@ -45,6 +45,7 @@ class CodeGenerator(Interpreter):
     vtable = dict({})
     enums: List[str] = []
     generic_struct_map = dict({})
+    typemap: Dict[str, ir.Type] = dict({})
 
     curr_namespace_name = None
     curr_namespace_data = dict({})
@@ -232,6 +233,11 @@ class CodeGenerator(Interpreter):
         if isinstance(t, ir.IntType):
             return t.intrinsic_name
 
+        if isinstance(t, ir.FunctionType):
+            args_s = "_".join([self.normalized_type_name(a) for a in t.args])
+            res_ty = self.normalized_type_name(t.return_type)
+            return f"_{res_ty}__{args_s}_"
+
         raise Exception("Unhandled type: ", t)
 
     def method_definition(self, values: Tree):
@@ -294,7 +300,13 @@ class CodeGenerator(Interpreter):
         func_type = ir.FunctionType(
             return_type=self.visit(node.return_type), args=arg_types
         )
-        func = ir.Function(self.module, func_type, node.name)
+
+        f_typed_name = node.name
+        # f_typed_name = f"{node.name}_{self.normalized_type_name(func_type)}"
+        # if node.name == "main":
+        #     f_typed_name = "main"
+
+        func = ir.Function(self.module, func_type, f_typed_name)
 
         entry_block = func.append_basic_block("entry")
         self.builder = ir.IRBuilder(entry_block)
@@ -388,6 +400,11 @@ class CodeGenerator(Interpreter):
 
         return self.builder.bitcast(val, self.visit(cast_expr.children[0]))
 
+    def type_declaration(self, values: Tree):
+        alias = values.children[0].value
+        ty = self.visit(values.children[1])
+        self.typemap[alias] = ty
+
     def type(self, values: Tree):
         match values.children[0].data:
             case "i8":
@@ -411,13 +428,40 @@ class CodeGenerator(Interpreter):
             case "user_type":
                 typename = values.children[0].children[0].value
 
-                # if typename in self.type_param_map:
-                #     return self.type_param_map[typename]
+                if typename in self.typemap:
+                    return self.typemap[typename]
 
                 return self.module.context.get_identified_type(typename)
 
+            case "function_type":
+                if len(values.children[0].children) == 1:
+                    return ir.FunctionType(
+                        self.visit(values.children[0].children[0]), []
+                    )
+
+                arg_types = []
+                curr = values.children[0].children[0]
+                while len(curr.children) == 2:
+                    arg_types.insert(0, curr.children[1])
+                    curr = curr.children[0]
+                arg_types.insert(0, curr.children[0])
+                arg_types = [self.visit(arg) for arg in arg_types]
+
+                return_type = self.visit(values.children[0].children[1])
+                return ir.FunctionType(return_type, arg_types)
+
+            # case "wrapped_type":
+            #     print(self.visit(values.children[0]))
+            #     quit()
+            #     return self.visit(values.children[0].children[0])
+
+        if values.children[0].data == "wrapped_type":
+            t = ir.Type = self.visit(values.children[0])
+
         if values.children[0].data == "type":
-            t: ir.Type = self.visit(values.children[0]).as_pointer()
+            t: ir.Type = self.visit(values.children[0])
+            if len(values.children) == 2 and values.children[1].data == "pointer":
+                t = t.as_pointer()
             return t
 
         # if values.children[0].data == "user_type_generic":
@@ -566,6 +610,15 @@ class CodeGenerator(Interpreter):
                 for arg in args:
                     field_name = arg.children[0].value
                     field_value = self.visit(arg.children[1])
+
+                    # expected_type = t.elements[field_map[field_name]]
+                    # if field_value.type != expected_type:
+                    #     # Try to cast constants
+                    #     if isinstance(field_value, ir.Constant):
+                    #         field_value = ir.Constant(
+                    #             expected_type, field_value.constant
+                    #         )
+
                     field_values.insert(field_map[field_name], field_value)
 
                 return ir.Constant(t, field_values)
@@ -585,49 +638,65 @@ class CodeGenerator(Interpreter):
                     [self.visit(arg) for arg in args],
                 )
 
-            elif call.children[0].children[0].value == "syscall":
-                syscall_f_ty = ir.FunctionType(
-                    ir.IntType(64), [ir.IntType(64), ir.IntType(64)]
+            elif call.children[0].children[0].value == "sscanf":
+                if "sscanf" not in self.native_functions:
+                    voidptr_ty = char_t.as_pointer()
+                    sscanf_ty = ir.FunctionType(
+                        ir.IntType(32), [voidptr_ty, voidptr_ty], var_arg=True
+                    )
+                    self.native_functions["sscanf"] = ir.Function(
+                        self.module, sscanf_ty, name="sscanf"
+                    )
+
+                return self.builder.call(
+                    self.native_functions["sscanf"],
+                    [self.visit(arg) for arg in args],
                 )
 
-                # reg = 0
-                # syscall = self.builder.asm(syscall_f_ty, "mov x0, ")
-
-                arg_values = [self.visit(arg) for arg in args]
+            elif call.children[0].children[0].value == "syscall":
+                syscall_id = self.visit(args[0])
+                arg_values = [self.visit(arg) for arg in args[1:]]
 
                 for i, arg_value in enumerate(arg_values):
                     self.builder.store_reg(arg_value, arg_value.type, f"x{i}")
 
-                return self.builder.asm(
-                    ir.FunctionType(void_t, []), "svc 0", "", [], True, name="syscall"
+                self.builder.store_reg(syscall_id, syscall_id.type, "x16")
+
+                self.builder.asm(
+                    ir.FunctionType(void_t, []),
+                    "svc 0x80",
+                    "",
+                    [],
+                    True,
+                    name="syscall",
                 )
 
-                # quit()
+                return self.builder.load_reg(i32_t, "x0")
 
-            elif call.children[0].children[0].value == "free":
-                if "free" not in self.native_functions:
-                    free_ty = ir.FunctionType(void_t, [i32_t.as_pointer()])
-                    self.native_functions["free"] = ir.Function(
-                        self.module, free_ty, name="free"
-                    )
+            # elif call.children[0].children[0].value == "free":
+            #     if "free" not in self.native_functions:
+            #         free_ty = ir.FunctionType(void_t, [i32_t.as_pointer()])
+            #         self.native_functions["free"] = ir.Function(
+            #             self.module, free_ty, name="free"
+            #         )
 
-                return self.builder.call(
-                    self.native_functions["free"],
-                    [self.visit(arg) for arg in args],
-                )
+            #     return self.builder.call(
+            #         self.native_functions["free"],
+            #         [self.visit(arg) for arg in args],
+            #     )
 
-            elif call.children[0].children[0].value == "malloc":
-                if "malloc" not in self.native_functions:
-                    voidptr_ty = ir.IntType(32).as_pointer()
-                    malloc_ty = ir.FunctionType(voidptr_ty, [ir.IntType(32)])
-                    self.native_functions["malloc"] = ir.Function(
-                        self.module, malloc_ty, name="malloc"
-                    )
+            # elif call.children[0].children[0].value == "malloc":
+            #     if "malloc" not in self.native_functions:
+            #         voidptr_ty = ir.IntType(32).as_pointer()
+            #         malloc_ty = ir.FunctionType(voidptr_ty, [ir.IntType(32)])
+            #         self.native_functions["malloc"] = ir.Function(
+            #             self.module, malloc_ty, name="malloc"
+            #         )
 
-                return self.builder.call(
-                    self.native_functions["malloc"],
-                    [self.visit(args[0])],
-                )
+            #     return self.builder.call(
+            #         self.native_functions["malloc"],
+            #         [self.visit(args[0])],
+            #     )
 
             else:
                 fn = self.visit(call.children[0])
@@ -635,6 +704,13 @@ class CodeGenerator(Interpreter):
         args = [self.visit(arg) for arg in args]
 
         return self.builder.call(fn=fn, args=args)
+
+    def logical_and_expression(self, values: Tree):
+        return self.builder.and_(
+            lhs=self.visit(values.children[0]),
+            rhs=self.visit(values.children[1]),
+            name="land_tmp",
+        )
 
     def mul_expr(self, values: Tree):
         return self.builder.mul(
@@ -644,12 +720,11 @@ class CodeGenerator(Interpreter):
         )
 
     def shift_r_expr(self, values: Tree):
-        raise Exception("shr todo")
-        # return self.builder.sh(
-        #     lhs=self.visit(values.children[0]),
-        #     rhs=self.visit(values.children[1]),
-        #     name="shr_tmp",
-        # )
+        return self.builder.lshr(
+            lhs=self.visit(values.children[0]),
+            rhs=self.visit(values.children[1]),
+            name="ashr_tmp",
+        )
 
     def shift_l_expr(self, values: Tree):
         return self.builder.shl(
@@ -738,6 +813,12 @@ class CodeGenerator(Interpreter):
 
     def expression_statement(self, expr_stmt: Tree):
         self.visit(expr_stmt.children[0])
+
+    def exclusive_or_expression(self, values: Tree):
+        return self.builder.xor(
+            lhs=self.visit(values.children[0]),
+            rhs=self.visit(values.children[1]),
+        )
 
     def and_expression(self, and_expression: Tree):
         return self.builder.and_(

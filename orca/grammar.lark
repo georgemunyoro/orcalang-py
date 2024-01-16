@@ -4,7 +4,10 @@
 // Declarations
 ?declaration: struct_declaration
               | variable_declaration
+              | type_declaration
               // | enum_declaration
+       
+type_declaration: "type" IDENTIFIER "=" type
 
 variable_declaration: "let" IDENTIFIER ":" type "=" expression ";"
               | "let" IDENTIFIER "[" INT "]" ":" type ";" -> array_variable_declaration
@@ -33,6 +36,7 @@ parameter_type: IDENTIFIER ":" type
 // Types
 type: type_specifier
        | type pointer?
+       | "(" type ")"
 
 pointer: "*"
 
@@ -46,7 +50,7 @@ type_specifier: "int" -> int
               | "float" -> float
               | "void" -> void
               | IDENTIFIER -> user_type
-              // | IDENTIFIER "<" type_list ">" -> user_type_generic
+              | "(" type_list? ")" "->" type -> function_type
 
 type_list: type
               | type_list "," type
@@ -94,7 +98,7 @@ iteration_statement: "while" expression compound_statement            -> while_s
                      | logical_or_expression "||" logical_and_expression
 
 ?logical_and_expression: inclusive_or_expression
-                     | logical_and_expression "&&" inclusive_or_expression
+                     | logical_and_expression "and" inclusive_or_expression
 
 ?inclusive_or_expression: exclusive_or_expression
                      | inclusive_or_expression "^" exclusive_or_expression
